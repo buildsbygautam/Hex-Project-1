@@ -14,7 +14,7 @@ Hex AI is an **agentic security testing platform** that autonomously executes se
 
 ---
 
-## ✨ Key Features 
+## ✨ Key Features
 
 ### 🚀 **Agentic Execution**
 - **Autonomous Tool Execution**: AI runs security tools automatically (Nmap, SQLMap, Metasploit, etc.)
