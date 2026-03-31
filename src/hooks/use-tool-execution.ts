@@ -39,7 +39,11 @@ export function useToolExecution(options: ToolExecutionOptions = {}) {
       reconnectTimeoutRef.current = null;
     }
 
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8081';
+    const wsUrl = import.meta.env.VITE_WS_URL;
+    if (!wsUrl) {
+      console.log('⚠️ No WebSocket URL configured - tool execution disabled');
+      return;
+    }
     console.log('🔌 Attempting to connect to:', wsUrl, '(Attempt:', reconnectAttemptsRef.current + 1, ')');
     const ws = new WebSocket(wsUrl);
 
