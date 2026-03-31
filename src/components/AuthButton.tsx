@@ -21,7 +21,7 @@ export function AuthButton() {
   } = useAuth();
 
   // Only ONE admin user allowed
-  const isAdmin = user?.email === 'vomollo101@gmail.com';
+  const isAdmin = user?.email === 'viraggautam8@gmail.com';
 
   if (loading) {
     return (
@@ -73,12 +73,12 @@ export function AuthCard() {
     signInWithGitHub,
     signOut,
     isAuthenticated,
-    isPremium,
-    canSendMessage
+    isPremium=true,
+    canSendMessage=true
   } = useAuth();
 
   // Only ONE admin user allowed
-  const isAdmin = user?.email === 'vomollo101@gmail.com';
+  const isAdmin = user?.email === 'viraggautam8@gmail.com';
 
   if (loading) {
     return (
@@ -114,7 +114,7 @@ export function AuthCard() {
             Sign in with GitHub
           </Button>
           <div className="text-xs text-gray-500 text-center">
-            Free: 3 messages/day • Premium: Unlimited ($3/month)
+            {/* Free: 3 messages/day • Premium: Unlimited ($3/month) */}
           </div>
         </CardContent>
       </Card>

@@ -142,7 +142,7 @@ export function useAuth() {
     refreshProfile,
     refreshUsage,
     isAuthenticated: !!session,
-    isPremium: profile?.subscription_status === 'premium',
-    canSendMessage: dailyUsage.canSendMessage,
+    // isPremium: profile?.subscription_status === 'premium',
+    // canSendMessage: dailyUsage.canSendMessage,
   };
 }
