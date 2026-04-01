@@ -172,6 +172,7 @@ const Index = () => {
 
  // Save messages whenever messages change
   const isReportOpenRef = useRef(false);
+  const messagesSnapshotRef = useRef<Message[]>([]);
   useEffect(() => {
     if (messages.length > 0 && !isReportOpenRef.current) {
       saveMessagesToStorage(messages);
@@ -619,6 +620,7 @@ const Index = () => {
   const generateReport = async () => {
     if (messages.length === 0) return;
 
+    messagesSnapshotRef.current = [...messages];
     setIsGeneratingReport(true);
     setShowReportModal(true);
     setReportContent(''); // Clear previous report
@@ -1534,6 +1536,7 @@ const Index = () => {
           if (!open) {
             isReportOpenRef.current = false;
             setShowReportModal(false);
+            setMessages(messagesSnapshotRef.current);
           } else {
             isReportOpenRef.current = true;
           }
