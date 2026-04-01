@@ -847,6 +847,13 @@ const Index = () => {
                   : msg
               )
             );
+          } else {
+            // Guarantee final flush of the complete content
+            setMessages(prevMessages =>
+              prevMessages.map(msg =>
+                msg.id === streamingMessageId ? { ...msg, content: fullContent } : msg
+              )
+            );
           }
           setRetryCount(0);
         },
@@ -875,11 +882,7 @@ const Index = () => {
       });
       }
     } finally {
-      // Cleanup streaming state and animation frame
-      if (streamingUpdateRef.current) {
-        cancelAnimationFrame(streamingUpdateRef.current);
-        streamingUpdateRef.current = null;
-      }
+      // Note: We don't cancel animation frame here anymore because it was dropping the final chunk update!
       setIsStreaming(false);
       setCurrentAbortController(null);
     }
