@@ -1,0 +1,30 @@
+[36mvite v5.4.21 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 2807 modules transformed.
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+Browserslist: browsers data (caniuse-lite) is 7 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+[31mx[39m Build failed in 3.33s
+[31merror during build:
+[31msrc/App.tsx (6:7): "default" is not exported by "src/pages/Index.tsx", imported by "src/App.tsx".[31m
+file: [36mC:/Users/Gaurav Pehlajani/Downloads/Hex- (1)/Hex-/src/App.tsx:6:7[31m
+[33m
+4: import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+5: import { BrowserRouter, Routes, Route } from "react-router-dom";
+6: import Index from "./pages/Index";
+          ^
+7: import AuthCallback from "./pages/AuthCallback";
+8: import Billing from "./pages/Billing";
+[31m
+    at getRollupError (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/parseAst.js:406:41)
+    at error (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/parseAst.js:402:42)
+    at Module.error (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:17380:16)
+    at Module.traceVariable (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:17813:29)
+    at ModuleScope.findVariable (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:15403:39)
+    at ReturnValueScope.findVariable (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:5676:38)
+    at FunctionBodyScope.findVariable (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:5676:38)
+    at Identifier.bind (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:5450:40)
+    at CallExpression.bind (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:2828:28)
+    at CallExpression.bind (file:///C:/Users/Gaurav%20Pehlajani/Downloads/Hex-%20(1)/Hex-/node_modules/rollup/dist/es/shared/node-entry.js:12512:15)[39m

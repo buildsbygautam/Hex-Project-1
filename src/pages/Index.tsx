@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown, FileText } from 'lucide-react';
+import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown, FileText, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,6 +18,9 @@ import TerminalWindow, { type TerminalOutput } from '@/components/TerminalWindow
 import { useToolExecution } from '@/hooks/use-tool-execution';
 import { professionalSecurityTools } from '@/lib/tools-schema';
 import { MCPClient } from '@/lib/mcp-client';
+import TargetOverview from '@/components/TargetOverview';
+import ScanHistory from '@/components/ScanHistory';
+import { supabase } from '@/lib/supabase';
 
 const SYSTEM_PROMPT = `
 You are Hex AI — a professional cybersecurity intelligence assistant. You analyze real security data from Shodan and VirusTotal APIs and explain findings in plain English.
@@ -26,13 +29,14 @@ STRICT RULES - NEVER BREAK THESE:
 - NEVER call any functions or tools like nmap_scan, dns_lookup, sqlmap_test, shodan_search, virustotal_lookup or ANY other function
 - NEVER write function calls like tool_name(param="value") in your response
 - ALWAYS look at the very end of the user's message for a section labeled [SYSTEM DATA ATTACHMENT].
-- If that section contains VirusTotal or Shodan data, you MUST analyze it.
+- If that section contains VirusTotal, Geolocation, WHOIS, or Shodan data, you MUST analyze it.
 - NEVER say "I don't have data" if there is text provided in the attachment.
 - Use the exact numbers provided in the attachment for your "FINDINGS" section.
 - If the attachment is missing, only then ask the user for an IP or domain.
 - Always use the FULL target name exactly as provided
 - When WHOIS data is provided, include domain registration details in your analysis
 - When GEOLOCATION data is provided, mention the physical location in your findings
+- When SHODAN data is provided, you MUST analyze the Open Ports and any Known Vulnerabilities (CVEs). Alert the user if dangerous ports are open (e.g. 22 SSH, 3389 RDP).
 - Always reference the CUSTOM RISK SCORE provided and explain what it means
 
 When real scan data is provided analyze it and respond in this exact format:
@@ -138,6 +142,11 @@ const Index = () => {
   }
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const [currentTarget, setCurrentTarget] = useState<string | null>(null);
+  const [geoData, setGeoData] = useState<string | null>(null);
+  const [shodanData, setShodanData] = useState<string | null>(null);
+  const [riskScore, setRiskScore] = useState<number>(0);
+  const [showHistory, setShowHistory] = useState(false);
 
   // Simple localStorage functions
   const saveMessagesToStorage = (messages: Message[]) => {
@@ -707,26 +716,48 @@ const Index = () => {
     }
 
     // Extract target and fetch real data before sending to AI
-    const { extractTarget, queryVirusTotal, queryGeolocation, queryWhois, calculateRiskScore, getRiskLabel } = await import('@/lib/deepseek-client');
+    const { extractTarget, queryVirusTotal, queryGeolocation, queryWhois, queryShodan, calculateRiskScore, getRiskLabel } = await import('@/lib/deepseek-client');
     const target = extractTarget(messageToSend);
     let realData = '';
     if (target) {
+      setCurrentTarget(target);
       const isPrivateIP = /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(target);
       if (isPrivateIP) {
         realData = `\n\nNote: ${target} is a private/local IP address. This is a local network address — external databases cannot be queried for private IPs.`;
       } else {
         const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
-        const [vtData, geoData, whoisData] = await Promise.all([
+        const [vtData, geoData, whoisData, shodanData] = await Promise.all([
           queryVirusTotal(target),
           isIP ? queryGeolocation(target) : Promise.resolve('Geolocation: Only available for IP addresses.'),
-          !isIP ? queryWhois(target) : Promise.resolve('WHOIS: Only available for domains.')
+          !isIP ? queryWhois(target) : Promise.resolve('WHOIS: Only available for domains.'),
+          isIP ? queryShodan(target) : Promise.resolve('SHODAN: Only available for IP addresses.')
         ]);
         console.log('FULL VIRUSTOTAL DATA:', vtData);
         console.log('GEOLOCATION DATA:', geoData);
         console.log('WHOIS DATA:', whoisData);
-        const riskScore = calculateRiskScore(vtData, geoData);
-        const riskLabel = getRiskLabel(riskScore);
-        realData = `\n\nREAL SCAN DATA FOR ${target}:\n${vtData}\n\n${geoData}\n\n${whoisData}\n\nCUSTOM RISK SCORE: ${riskScore}/100 (${riskLabel})`;
+        console.log('SHODAN DATA:', shodanData);
+        
+        const calculatedRiskScore = calculateRiskScore(vtData, geoData, shodanData);
+        const riskLabel = getRiskLabel(calculatedRiskScore);
+        
+        // Update dashboard state
+        setGeoData(geoData);
+        setShodanData(shodanData);
+        setRiskScore(calculatedRiskScore);
+        
+        // Log to database asynchronously
+        if (user?.id) {
+          supabase.from('scan_history').insert({
+            user_id: user.id,
+            target: target,
+            risk_score: calculatedRiskScore,
+            verdict: riskLabel,
+          }).then(({ error }) => {
+            if (error) console.warn('Failed to log scan to history (table might not exist yet):', error);
+          });
+        }
+        
+        realData = `\n\nREAL SCAN DATA FOR ${target}:\n${vtData}\n\n${geoData}\n\n${whoisData}\n\n${shodanData}\n\nCUSTOM RISK SCORE: ${calculatedRiskScore}/100 (${riskLabel})`;
       }
     }
 
@@ -1011,36 +1042,51 @@ const Index = () => {
             {/* Right side - Simplified for mobile */}
             <div className="flex items-center gap-1 sm:gap-2">
               {/* New Chat Button - Show when authenticated and not streaming (hidden on mobile since we have it in input) */}
-              {isAuthenticated && !isStreaming && !isMobile && (
-                <div className="flex items-center">
-                  <div 
-                    className="flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border border-blue-500/20 cursor-pointer hover:bg-blue-500/10 transition-colors"
-                    onClick={startNewChat}
-                    title="Start New Chat"
-                  >
+              {/* Action Buttons Group */}
+              {isAuthenticated && !isMobile && (
+                <div className="flex items-center gap-2">
+                  
+                  {/* New Chat Button */}
+                  {!isStreaming && (
+                    <div 
+                      className="flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border border-blue-500/20 cursor-pointer hover:bg-blue-500/10 transition-colors"
+                      onClick={startNewChat}
+                      title="Start New Chat"
+                    >
+                      <Plus className="h-3 w-3 text-blue-400" />
+                      <span className="hidden sm:inline text-blue-300/80 text-xs font-light">
+                        New Chat
+                      </span>
+                    </div>
+                  )}
 
-              {/* Generate Report Button */}
-              {isAuthenticated && messages.length > 1 && !isStreaming && !isMobile && (
-                <div className="flex items-center ml-2">
+                  {/* History Dashboard Button */}
                   <div 
-                    className={`flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border cursor-pointer transition-colors ${
-                      isGeneratingReport ? 'border-orange-500/20 text-orange-400' : 'border-purple-500/20 hover:bg-purple-500/10 text-purple-300'
-                    }`}
-                    onClick={generateReport}
-                    title="Generate Assessment Report"
+                    className="flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border border-blue-500/30 cursor-pointer transition-colors hover:bg-blue-500/10 text-blue-300"
+                    onClick={() => setShowHistory(true)}
+                    title="View Scan History Dashboard"
                   >
-                    <FileText className={`h-3 w-3 ${isGeneratingReport ? 'animate-pulse' : ''}`} />
+                    <Clock className="h-3 w-3" />
                     <span className="hidden sm:inline text-xs font-light">
-                      {isGeneratingReport ? 'Generating...' : 'Report'}
+                      History
                     </span>
                   </div>
-                </div>
-              )}
-                    <Plus className="h-3 w-3 text-blue-400" />
-                    <span className="hidden sm:inline text-blue-300/80 text-xs font-light">
-                      New Chat
-                    </span>
-                  </div>
+
+                  {/* Generate Report Button */}
+                  {messages.length > 1 && !isStreaming && (
+                    <div 
+                      className={`flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border cursor-pointer transition-colors ${
+                        isGeneratingReport ? 'border-orange-500/20 text-orange-400' : 'border-purple-500/20 hover:bg-purple-500/10 text-purple-300'
+                      }`}
+                      onClick={generateReport}
+                      title="Generate Assessment Report"
+                    >
+                      <FileText className={`h-3 w-3 ${isGeneratingReport ? 'animate-pulse' : ''}`} />
+                      <span className="hidden sm:inline text-xs font-light">
+                        {isGeneratingReport ? 'Generating...' : 'Report'}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1126,6 +1172,14 @@ const Index = () => {
                 `message-container h-full overflow-y-auto p-2 sm:p-3 md:p-4 lg:p-6 ${isMobile ? 'pb-16' : ''}`
               }
             >
+              {currentTarget && (
+                <TargetOverview 
+                  target={currentTarget} 
+                  geoData={geoData} 
+                  shodanData={shodanData} 
+                  riskScore={riskScore} 
+                />
+              )}
               {messages.length === 0 ? (
                 <div className="h-full flex items-center justify-center">
                   <div className="text-center space-y-3 sm:space-y-4 md:space-y-6 px-2 sm:px-4">
@@ -1578,11 +1632,14 @@ const Index = () => {
           </div>
         </DialogContent>
       </Dialog>
-
+      {/* Final History Modal */}
+      <ScanHistory 
+        open={showHistory} 
+        onOpenChange={setShowHistory} 
+        userId={user?.id}
+      />
     </div>
   );
 };
 
 export default Index;
-
-    

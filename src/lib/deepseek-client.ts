@@ -180,7 +180,44 @@ ASN: ${data.as}`;
   }
 }
 
-export function calculateRiskScore(vtData: string, geoData: string): number {
+export async function queryShodan(target: string): Promise<string> {
+  try {
+    const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
+    if (!isIP) return `SHODAN: Shodan lookup is only supported for IP addresses.`;
+
+    const isLocalhost = window.location.hostname === 'localhost';
+    let data;
+
+    if (isLocalhost) {
+      const apiKey = import.meta.env.VITE_SHODAN_API_KEY;
+      if (!apiKey) return `SHODAN: API key not configured.`;
+      const response = await fetch(`https://api.shodan.io/shodan/host/${target}?key=${apiKey}`);
+      if (!response.ok) return `SHODAN: No data available for ${target}.`;
+      data = await response.json();
+    } else {
+      const response = await fetch(`/.netlify/functions/shodan?target=${encodeURIComponent(target)}`);
+      if (!response.ok) return `SHODAN: No data available for ${target}.`;
+      data = await response.json();
+    }
+
+    if (data.error) return `SHODAN: ${data.error}`;
+
+    const ports = data.ports ? data.ports.join(', ') : 'None detected';
+    const os = data.os || 'Unknown';
+    const domains = data.domains && data.domains.length > 0 ? data.domains.join(', ') : 'None';
+    const vulns = data.vulns ? Object.keys(data.vulns).join(', ') : 'None detected';
+
+    return `SHODAN DATA FOR ${target}:
+Open Ports: ${ports}
+Operating System: ${os}
+Associated Domains: ${domains}
+Known Vulnerabilities (CVEs): ${vulns}`;
+  } catch (error) {
+    return `SHODAN: Could not fetch data for ${target}`;
+  }
+}
+
+export function calculateRiskScore(vtData: string, geoData: string, shodanData: string = ""): number {
   let score = 0;
 
   // Extract malicious detections (weight: 40 points max)
@@ -200,13 +237,33 @@ export function calculateRiskScore(vtData: string, geoData: string): number {
   else if (reputation < 10) score += 10;
   else if (reputation < 50) score += 5;
 
-  // Hosting provider penalty (weight: 10 points)
-  if (geoData.includes('Yes - likely a server/datacenter')) score += 10;
+  // Hosting provider penalty (weight: 5 points)
+  if (geoData.includes('Yes - likely a server/datacenter')) score += 5;
 
-  // Country risk factor (weight: 10 points)
+  // Country risk factor (weight: 5 points)
   const highRiskCountries = ['RU', 'CN', 'KP', 'IR', 'NG'];
   const countryMatch = geoData.match(/Country: .+ \(([A-Z]{2})\)/);
-  if (countryMatch && highRiskCountries.includes(countryMatch[1])) score += 10;
+  if (countryMatch && highRiskCountries.includes(countryMatch[1])) score += 5;
+
+  // Shodan Port & Vulnerability risk (weight: up to 20 points)
+  if (shodanData.includes('Known Vulnerabilities')) {
+    const vulnsMatch = shodanData.match(/Known Vulnerabilities \(CVEs\): (.+)/);
+    if (vulnsMatch && vulnsMatch[1] !== 'None detected') {
+      score += 15; // Known CVEs are highly risky
+    }
+  }
+  
+  if (shodanData.includes('Open Ports:')) {
+    // Check for historically targeted ports
+    const riskyPorts = ['21', '22', '23', '3389', '445', '1433', '3306'];
+    const portsMatch = shodanData.match(/Open Ports: (.+)/);
+    if (portsMatch && portsMatch[1] !== 'None detected') {
+      const openPorts = portsMatch[1].split(',').map(p => p.trim());
+      const hasRiskyPorts = openPorts.some(p => riskyPorts.includes(p));
+      if (hasRiskyPorts) score += 10;
+      else if (openPorts.length > 0) score += 5; // General open surface area
+    }
+  }
 
   return Math.min(score, 100);
 }
