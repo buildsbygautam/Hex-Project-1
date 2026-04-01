@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown } from 'lucide-react';
+import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,9 +28,11 @@ You are Hex AI — a professional cybersecurity intelligence assistant. You anal
 STRICT RULES - NEVER BREAK THESE:
 - NEVER call any functions or tools like nmap_scan, dns_lookup, sqlmap_test, shodan_search, virustotal_lookup or ANY other function
 - NEVER write function calls like tool_name(param="value") in your response
-- NEVER suggest running additional scans or tools
-- The real data from Shodan and VirusTotal is already provided to you in the user message
-- ONLY analyze the data that is already given to you - do not ask for more scans
+- ALWAYS look at the very end of the user's message for a section labeled [SYSTEM DATA ATTACHMENT].
+- If that section contains VirusTotal or Shodan data, you MUST analyze it.
+- NEVER say "I don't have data" if there is text provided in the attachment.
+- Use the exact numbers provided in the attachment for your "FINDINGS" section.
+- If the attachment is missing, only then ask the user for an IP or domain.
 - Always use the FULL target name exactly as provided
 
 When real scan data is provided analyze it and respond in this exact format:
@@ -168,9 +170,10 @@ const Index = () => {
     setMessages(savedMessages);
   }, []);
 
-  // Save messages whenever messages change
+ // Save messages whenever messages change
+  const isReportOpenRef = useRef(false);
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 && !isReportOpenRef.current) {
       saveMessagesToStorage(messages);
     }
   }, [messages]);
@@ -267,7 +270,7 @@ const Index = () => {
 
   // Check if context limit would be exceeded (updated for 128K context)
   const checkContextLimit = (newMessageContent: string): boolean => {
-    const CONTEXT_LIMIT = 120000; // Use 120K out of 128K (leave buffer)
+    const CONTEXT_LIMIT = 300000; // Use 120K out of 128K (leave buffer)
     const SYSTEM_PROMPT_TOKENS = estimateTokens(SYSTEM_PROMPT);
     const RESPONSE_BUFFER = 8192;
 
@@ -343,6 +346,11 @@ const Index = () => {
   };
 
   const [input, setInput] = useState('');
+  // Report Generation State - declared early so useEffect can reference it
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportContent, setReportContent] = useState('');
+
   // Removed isLoading state - now using direct streaming
   // Removed loadingMessage state - now using streaming text
   const [lastError, setLastError] = useState<ApiError | null>(null);
@@ -607,6 +615,58 @@ const Index = () => {
     }
   }, [isToolExecuting, executeTool, addMessage]);
 
+  // Generate Professional Report
+  const generateReport = async () => {
+    if (messages.length === 0) return;
+
+    setIsGeneratingReport(true);
+    setShowReportModal(true);
+    setReportContent(''); // Clear previous report
+
+    // Compile the chat history into a readable format for the AI
+    const sessionContext = messages.map(m => `${m.type === 'user' ? 'USER' : 'HEX AI'}: ${m.content}`).join('\n\n');
+
+    const reportPrompt = `You are Hex AI, a Senior Penetration Tester. Generate a professional, executive-level cybersecurity assessment report based ONLY on the following chat session. 
+    
+    Format the report in clean Markdown. Include:
+    1. Executive Summary
+    2. Scope/Target (extract from the user's inputs)
+    3. Detailed Findings (based ONLY on the real Shodan/VirusTotal API data discussed)
+    4. Risk Assessment (Critical/High/Medium/Low)
+    5. Actionable Recommendations
+
+    Do NOT invent vulnerabilities that weren't discussed in the chat.
+    
+    CHAT SESSION TO ANALYZE:
+    ${sessionContext}`;
+
+    try {
+      const { sendToDeepSeek } = await import('@/lib/deepseek-client');
+      let fullReport = '';
+
+      // Use your existing DeepSeek connection to stream the report!
+      await sendToDeepSeek(
+        [{ role: 'user', content: reportPrompt }],
+        "You are a professional cybersecurity report generator.",
+        (text) => {
+          fullReport += text;
+          setReportContent(fullReport); // Stream text into the modal
+        },
+        () => {
+          setIsGeneratingReport(false); // Done
+        },
+        (error) => {
+          setReportContent(`Error generating report: ${error.message}`);
+          setIsGeneratingReport(false);
+        }
+      );
+    } catch (error) {
+      console.error(error);
+      setReportContent('Failed to initialize report generation.');
+      setIsGeneratingReport(false);
+    }
+  };
+
   const sendMessage = async (isRetry: boolean = false, autoTrigger: boolean = false, directMessage?: string) => {
     const messageToSend = directMessage || input.trim();
     // Skip input check if this is an auto-triggered analysis or direct message
@@ -718,7 +778,9 @@ const Index = () => {
       userScrolledRef.current = false;
 
       // Use optimized context management for better token efficiency
-      const filteredMessages = messages.filter(msg => !msg.isError).slice(-4);
+      // This ensures that 'assistant' messages containing reports are NOT used for 
+      // token limit calculations in the main chat window.
+      const filteredMessages = messages.filter(msg => !msg.isError).slice(-6);
       const optimizedMessages = getOptimizedContext(filteredMessages, 120000);
       
       const conversationHistory = optimizedMessages.map(msg => ({
@@ -729,7 +791,11 @@ const Index = () => {
       const conversationMessages = [
         { role: 'system', content: SYSTEM_PROMPT },
         ...conversationHistory,
-        { role: 'user', content: messageToSend + realData }
+        { 
+          role: 'user', 
+          // Match the [SYSTEM DATA ATTACHMENT] label from your prompt
+          content: `${messageToSend}\n\n[SYSTEM DATA ATTACHMENT]\n${realData || "No external API data found."}` 
+        }
       ];
 
       const requestPayload = {
@@ -757,7 +823,7 @@ const Index = () => {
       const { sendToDeepSeek } = await import('@/lib/deepseek-client');
       
       await sendToDeepSeek(
-        [...conversationHistory, { role: 'user' as const, content: messageToSend }],
+        conversationMessages, 
         SYSTEM_PROMPT,
         (text) => {
           fullContent += text;
@@ -952,6 +1018,24 @@ const Index = () => {
                     onClick={startNewChat}
                     title="Start New Chat"
                   >
+
+              {/* Generate Report Button */}
+              {isAuthenticated && messages.length > 1 && !isStreaming && !isMobile && (
+                <div className="flex items-center ml-2">
+                  <div 
+                    className={`flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border cursor-pointer transition-colors ${
+                      isGeneratingReport ? 'border-orange-500/20 text-orange-400' : 'border-purple-500/20 hover:bg-purple-500/10 text-purple-300'
+                    }`}
+                    onClick={generateReport}
+                    title="Generate Assessment Report"
+                  >
+                    <FileText className={`h-3 w-3 ${isGeneratingReport ? 'animate-pulse' : ''}`} />
+                    <span className="hidden sm:inline text-xs font-light">
+                      {isGeneratingReport ? 'Generating...' : 'Report'}
+                    </span>
+                  </div>
+                </div>
+              )}
                     <Plus className="h-3 w-3 text-blue-400" />
                     <span className="hidden sm:inline text-blue-300/80 text-xs font-light">
                       New Chat
@@ -1443,6 +1527,57 @@ const Index = () => {
           </div>
         </DialogContent>
       </Dialog>
+{/* Report Generation Modal */}
+      <Dialog 
+        open={showReportModal}
+        onOpenChange={(open) => {
+          if (!open) {
+            isReportOpenRef.current = false;
+            setShowReportModal(false);
+          } else {
+            isReportOpenRef.current = true;
+          }
+        }}
+      >
+        <DialogContent className="bg-gray-900 border-green-500/30 text-green-400 w-[95vw] max-w-4xl mx-auto h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="text-green-400 flex items-center justify-between pr-6">
+              <div className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Executive Security Assessment
+              </div>
+              {!isGeneratingReport && reportContent && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-green-500/30 text-green-400 hover:bg-green-500/10 h-8"
+                  onClick={() => {
+                    navigator.clipboard.writeText(reportContent);
+                    alert("Report copied to clipboard!"); // Simple alert, or use your toast system
+                  }}
+                >
+                  <CopyIcon className="h-4 w-4 mr-2" />
+                  Copy Markdown
+                </Button>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-black/60 rounded-md border border-gray-800 shadow-inner mt-2">
+            {isGeneratingReport && !reportContent ? (
+              <div className="flex flex-col items-center justify-center h-full space-y-4">
+                <div className="w-8 h-8 border-4 border-green-500/30 border-t-green-400 rounded-full animate-spin"></div>
+                <p className="text-green-400 animate-pulse font-light">Analyzing session and compiling report...</p>
+              </div>
+            ) : (
+              <div className="prose prose-invert prose-green max-w-none text-sm sm:text-base">
+                <ReactMarkdown>{reportContent}</ReactMarkdown>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 };

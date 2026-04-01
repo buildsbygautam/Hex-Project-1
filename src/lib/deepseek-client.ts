@@ -28,7 +28,7 @@ export async function sendToDeepSeek(
           ...messages
         ],
         stream: true,
-        max_tokens: 4000,
+        max_tokens: 8000,
         temperature: 0.3
       }),
       signal: abortSignal
@@ -109,12 +109,10 @@ Verdict: ${malicious > 5 ? '🚨 MALICIOUS' : malicious > 0 ? '⚠️ SUSPICIOUS
 
 export function extractTarget(message: string): string | null {
   // Match full IP address
-  const ipMatch = message.match(/\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/);
-  if (ipMatch) {
-    return `${ipMatch[1]}.${ipMatch[2]}.${ipMatch[3]}.${ipMatch[4]}`;
-  }
+  const ipMatch = message.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/);
+  if (ipMatch) return ipMatch[0];
   // Match domain
-  const domainMatch = message.match(/\b([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/);
+  const domainMatch = message.match(/\b[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}\b/);
   if (domainMatch) return domainMatch[0];
   return null;
 }
