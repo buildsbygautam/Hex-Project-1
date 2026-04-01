@@ -7,7 +7,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 import ReactMarkdown from 'react-markdown';
-import { lazy, Suspense } from 'react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { ApiError } from '@/lib/api-error-handler';
 
@@ -18,8 +17,6 @@ import PresetsCard from '@/components/PresetsCard';
 import TerminalWindow, { type TerminalOutput } from '@/components/TerminalWindow';
 import { useToolExecution } from '@/hooks/use-tool-execution';
 import { professionalSecurityTools } from '@/lib/tools-schema';
-import { conversationOptimizer } from '@/lib/conversation-optimizer';
-import { getContextualTools } from '@/lib/tool-manager';
 import { MCPClient } from '@/lib/mcp-client';
 
 const SYSTEM_PROMPT = `
@@ -34,6 +31,9 @@ STRICT RULES - NEVER BREAK THESE:
 - Use the exact numbers provided in the attachment for your "FINDINGS" section.
 - If the attachment is missing, only then ask the user for an IP or domain.
 - Always use the FULL target name exactly as provided
+- When WHOIS data is provided, include domain registration details in your analysis
+- When GEOLOCATION data is provided, mention the physical location in your findings
+- Always reference the CUSTOM RISK SCORE provided and explain what it means
 
 When real scan data is provided analyze it and respond in this exact format:
 
@@ -707,17 +707,26 @@ const Index = () => {
     }
 
     // Extract target and fetch real data before sending to AI
-    const { extractTarget, queryVirusTotal } = await import('@/lib/deepseek-client');
+    const { extractTarget, queryVirusTotal, queryGeolocation, queryWhois, calculateRiskScore, getRiskLabel } = await import('@/lib/deepseek-client');
     const target = extractTarget(messageToSend);
     let realData = '';
     if (target) {
       const isPrivateIP = /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(target);
       if (isPrivateIP) {
-        realData = `\n\nNote: ${target} is a private/local IP address. Shodan only has data on public internet-facing IPs. I cannot query external databases for this target.`;
+        realData = `\n\nNote: ${target} is a private/local IP address. This is a local network address — external databases cannot be queried for private IPs.`;
       } else {
-        const vtData = await queryVirusTotal(target);
+        const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
+        const [vtData, geoData, whoisData] = await Promise.all([
+          queryVirusTotal(target),
+          isIP ? queryGeolocation(target) : Promise.resolve('Geolocation: Only available for IP addresses.'),
+          !isIP ? queryWhois(target) : Promise.resolve('WHOIS: Only available for domains.')
+        ]);
         console.log('FULL VIRUSTOTAL DATA:', vtData);
-        realData = `\n\nREAL SCAN DATA FOR ${target}:\n${vtData}`;
+        console.log('GEOLOCATION DATA:', geoData);
+        console.log('WHOIS DATA:', whoisData);
+        const riskScore = calculateRiskScore(vtData, geoData);
+        const riskLabel = getRiskLabel(riskScore);
+        realData = `\n\nREAL SCAN DATA FOR ${target}:\n${vtData}\n\n${geoData}\n\n${whoisData}\n\nCUSTOM RISK SCORE: ${riskScore}/100 (${riskLabel})`;
       }
     }
 
@@ -726,7 +735,7 @@ const Index = () => {
     if (!apiKey) {
       handleApiError({
         type: 'client',
-        message: 'DeepSeek API key not found. Please set VITE_DEEPSEEK_API_KEY in your .env file.',
+        message: 'Groq API key not found. Please set VITE_GROQ_API_KEY in your .env file.',
         status: 0,
         retryable: true,
       });
@@ -790,37 +799,23 @@ const Index = () => {
         content: msg.content
       }));
 
-      const conversationMessages = [
-        { role: 'system', content: SYSTEM_PROMPT },
+      const conversationMessages: Array<{role: 'user' | 'assistant' | 'system', content: string}> = [
+        { role: 'system' as const, content: SYSTEM_PROMPT },
         ...conversationHistory,
         { 
-          role: 'user', 
+          role: 'user' as const, 
           // Match the [SYSTEM DATA ATTACHMENT] label from your prompt
           content: `${messageToSend}\n\n[SYSTEM DATA ATTACHMENT]\n${realData || "No external API data found."}` 
         }
       ];
 
-      const requestPayload = {
-        model: 'deepseek-chat',
-        messages: conversationMessages,
-        temperature: 0.7,
-        max_tokens: 2048,
-        stream: true
-      };
-      
-      // Debug: Log the request payload
-      console.log('📤 Sending to DeepSeek:', {
-        model: requestPayload.model,
+      // Debug: Log the request
+      console.log('📤 Sending to Groq AI:', {
         messageCount: conversationMessages.length,
-        toolCount: professionalSecurityTools.length,
-        lastMessage: conversationMessages[conversationMessages.length - 1]?.content?.substring(0, 100),
-        sampleTool: professionalSecurityTools[0] // Log first tool to verify format
+        lastMessage: conversationMessages[conversationMessages.length - 1]?.content?.substring(0, 100)
       });
       
-      // Initialize MCP Client with callbacks for this request
       let fullContent = '';
-      let hasToolCalls = false;
-      const toolCallQueue: Array<{ name: string; arguments: any }> = [];
       // Send directly to DeepSeek API
       const { sendToDeepSeek } = await import('@/lib/deepseek-client');
       
