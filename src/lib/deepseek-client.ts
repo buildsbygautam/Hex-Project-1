@@ -15,8 +15,8 @@ export async function sendToDeepSeek(
   onError: (error: Error) => void,
   abortSignal?: AbortSignal
 ) {
-  const requestBody = {
-    model: 'llama-3.3-70b-versatile',
+  const getRequestBody = (model: string) => ({
+    model: model,
     messages: [
       { role: 'system', content: systemPrompt },
       ...messages
@@ -24,29 +24,50 @@ export async function sendToDeepSeek(
     stream: true,
     max_tokens: 4096,
     temperature: 0.3
-  };
+  });
+
+  const models = ['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile', 'llama-3.1-8b-instant'];
 
   try {
-    let response = await fetch(GROQ_API_URL, {
+    let response: Response | null = null;
+    let lastError: string = '';
+
+    // First try: Primary Key with Best Model
+    response = await fetch(GROQ_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${GROQ_API_KEY}`
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(getRequestBody(models[0])),
       signal: abortSignal
     });
 
-    // Fallback to backup key if rate limited
+    // Second try: Backup Key with Best Model if 429
     if (response.status === 429 && GROQ_API_KEY_BACKUP) {
-      console.log('Primary key rate limited. Falling back to backup key...');
+      console.log('Primary key rate limited. Trying backup key...');
       response = await fetch(GROQ_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${GROQ_API_KEY_BACKUP}`
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(getRequestBody(models[0])),
+        signal: abortSignal
+      });
+    }
+
+    // Third try: Primary Key with smaller model (Instant) if still 429
+    // The 8b-instant model has HUGE rate limits compared to 70b
+    if (response.status === 429) {
+      console.log('70B model rate limited. Falling back to 8B-instant model for core intelligence...');
+      response = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GROQ_API_KEY}`
+        },
+        body: JSON.stringify(getRequestBody(models[2])),
         signal: abortSignal
       });
     }

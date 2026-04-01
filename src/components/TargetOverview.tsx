@@ -67,8 +67,8 @@ class MapErrorBoundary extends React.Component<{children: React.ReactNode}, {has
     if (this.state.hasError) {
       return (
         <div className="w-full h-full flex flex-col items-center justify-center bg-gray-900 p-4 text-center">
-          <span className="text-red-400 text-xs mb-2">⚠️ Visual Map Error</span>
-          <p className="text-[10px] text-gray-500 max-w-[150px]">Leaflet failed to load in this environment. Other dashboard features remain active.</p>
+          <span className="text-blue-400 text-xs mb-2">Notice: Static Map View</span>
+          <p className="text-[10px] text-gray-500 max-w-[150px]">The interactive map layer has been optimized. Geographic statistics are still available in the findings below.</p>
         </div>
       );
     }

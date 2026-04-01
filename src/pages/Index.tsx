@@ -753,31 +753,26 @@ const Index = () => {
         
         const calculatedRiskScore = calculateRiskScore(vtData, geoData, shodanData);
         const riskLabel = getRiskLabel(calculatedRiskScore);
-        console.log('🎯 CALCULATED SCORE:', calculatedRiskScore);
         
         // Update dashboard state
-        console.log('⚙️ UPDATING DASHBOARD STATE...');
         setGeoData(geoData);
         setShodanData(shodanData);
         setRiskScore(calculatedRiskScore);
-        console.log('✨ DASHBOARD STATE UPDATED');
         
         // Log to database asynchronously
         if (user?.id) {
-          console.log('💾 LOGGING TO SUPABASE...');
           supabase.from('scan_history').insert({
             user_id: user.id,
             target: target,
             risk_score: calculatedRiskScore,
             verdict: riskLabel,
           }).then(({ error }) => {
-            if (error) console.warn('Failed to log scan to history (table might not exist yet):', error);
-            else console.log('✅ SUPABASE LOG SUCCESS');
+            if (error) console.warn('History Log Note:', error.message);
           });
         }
         
-        realData = `\n\nREAL SCAN DATA FOR ${target}:\n${vtData}\n\n${geoData}\n\n${whoisData}\n\n${shodanData}\n\nCUSTOM RISK SCORE: ${calculatedRiskScore}/100 (${riskLabel})`;
-        console.log('--- SCAN COMPLETE - SENDING TO AI ---');
+        // Optimize payload for AI
+        realData = `\n\n[SECURITY SCAN SUMMARY FOR ${target}]\nRisk Score: ${calculatedRiskScore}/100\nVerdict: ${riskLabel}\n\n[VirusTotal]: ${vtData.substring(0, 500)}...\n\n[Geolocation]: ${geoData}\n\n[Shodan]: ${shodanData.substring(0, 500)}...`;
       }
     }
 
