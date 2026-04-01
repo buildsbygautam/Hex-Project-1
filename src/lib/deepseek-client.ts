@@ -30,7 +30,6 @@ export async function sendToDeepSeek(
 
   try {
     let response: Response | null = null;
-    let lastError: string = '';
 
     // First try: Primary Key with Best Model
     response = await fetch(GROQ_API_URL, {
@@ -58,9 +57,8 @@ export async function sendToDeepSeek(
     }
 
     // Third try: Primary Key with smaller model (Instant) if still 429
-    // The 8b-instant model has HUGE rate limits compared to 70b
     if (response.status === 429) {
-      console.log('70B model rate limited. Falling back to 8B-instant model for core intelligence...');
+      console.log('70B model rate limited. Falling back to 8B-instant model...');
       response = await fetch(GROQ_API_URL, {
         method: 'POST',
         headers: {
@@ -112,6 +110,14 @@ export async function sendToDeepSeek(
   }
 }
 
+export function extractTarget(message: string): string | null {
+  const ipMatch = message.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/);
+  if (ipMatch) return ipMatch[0];
+  const domainMatch = message.match(/\b[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}\b/);
+  if (domainMatch) return domainMatch[0];
+  return null;
+}
+
 export async function queryVirusTotal(target: string): Promise<string> {
   try {
     const isLocalhost = window.location.hostname === 'localhost';
@@ -119,7 +125,6 @@ export async function queryVirusTotal(target: string): Promise<string> {
     
     let data;
     if (isLocalhost) {
-      // Direct call on localhost (no CORS issue)
       const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
       const endpoint = isIP
         ? `https://www.virustotal.com/api/v3/ip_addresses/${target}`
@@ -130,7 +135,6 @@ export async function queryVirusTotal(target: string): Promise<string> {
       if (!response.ok) return `VirusTotal error: ${response.status}`;
       data = await response.json();
     } else {
-      // Use Netlify proxy function on deployed site
       const response = await fetch(`/.netlify/functions/virustotal?target=${encodeURIComponent(target)}`);
       if (!response.ok) return `VirusTotal error: ${response.status}`;
       data = await response.json();
@@ -157,16 +161,6 @@ Verdict: ${malicious > 5 ? '🚨 MALICIOUS' : malicious > 0 ? '⚠️ SUSPICIOUS
   }
 }
 
-export function extractTarget(message: string): string | null {
-  // Match full IP address
-  const ipMatch = message.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/);
-  if (ipMatch) return ipMatch[0];
-  // Match domain
-  const domainMatch = message.match(/\b[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}\b/);
-  if (domainMatch) return domainMatch[0];
-  return null;
-}
-
 export async function queryGeolocation(target: string): Promise<string> {
   try {
     const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
@@ -176,11 +170,9 @@ export async function queryGeolocation(target: string): Promise<string> {
     let data;
 
     if (isLocalhost) {
-      // Direct call on localhost (http is fine locally)
       const response = await fetch(`http://ip-api.com/json/${target}?fields=status,message,country,countryCode,region,regionName,city,lat,lon,isp,org,as,hosting`);
       data = await response.json();
     } else {
-      // Use Netlify proxy function on deployed site (avoids HTTP/HTTPS mixed content)
       const response = await fetch(`/.netlify/functions/geolocation?target=${encodeURIComponent(target)}`);
       data = await response.json();
     }
@@ -212,77 +204,99 @@ export async function queryShodan(target: string): Promise<string> {
     if (isLocalhost) {
       const apiKey = import.meta.env.VITE_SHODAN_API_KEY;
       if (!apiKey) return `SHODAN: API key not configured.`;
-      const response = await fetch(`https://api.shodan.io/shodan/host/${target}?key=${apiKey}`);
-      if (!response.ok) return `SHODAN: No data available for ${target}.`;
+      const response = await fetch(`/shodan-proxy/shodan/host/${target}?key=${apiKey}`);
+      if (!response.ok) return `SHODAN: No data available for ${target}. Status: ${response.status}`;
       data = await response.json();
     } else {
-      const response = await fetch(`/.netlify/functions/shodan?target=${encodeURIComponent(target)}`);
-      if (!response.ok) return `SHODAN: No data available for ${target}.`;
+      const response = await fetch(`/.netlify/functions/shodan?ip=${target}`);
+      if (!response.ok) return `SHODAN: Remote proxy error ${response.status}.`;
       data = await response.json();
     }
-
+    
     if (data.error) return `SHODAN: ${data.error}`;
+    
+    const ports = (data.ports || []).join(', ');
+    const vulns = (data.vulns || []).join(', ');
+    
+    return `SHODAN DATA FOR ${target}:\n- Open Ports: ${ports || 'None detected'}\n- Known Vulnerabilities (CVEs): ${vulns || 'None detected'}`;
+  } catch (error: any) {
+    return `SHODAN: Could not retrieve data.`;
+  }
+}
 
-    const ports = data.ports ? data.ports.join(', ') : 'None detected';
-    const os = data.os || 'Unknown';
-    const domains = data.domains && data.domains.length > 0 ? data.domains.join(', ') : 'None';
-    const vulns = data.vulns ? Object.keys(data.vulns).join(', ') : 'None detected';
+export async function queryWhois(target: string): Promise<string> {
+  try {
+    const isLocalhost = window.location.hostname === 'localhost';
+    const proxyUrl = isLocalhost ? `/whois-proxy/domain/${target}` : `https://rdap.org/domain/${target}`;
+    
+    const response = await fetch(proxyUrl);
+    if (!response.ok) return `WHOIS: No registration data available for ${target}. Status: ${response.status}`;
+    
+    const data = await response.json();
+    let registrar = 'Unknown';
+    let createdDate = 'Unknown';
+    
+    if (data.entities && data.entities.length > 0) {
+      let regEntity = data.entities.find((e: any) => e.roles && e.roles.includes('registrar'));
+      if (!regEntity) regEntity = data.entities.find((e: any) => e.vcardArray || e.handle);
 
-    return `SHODAN DATA FOR ${target}:
-Open Ports: ${ports}
-Operating System: ${os}
-Associated Domains: ${domains}
-Known Vulnerabilities (CVEs): ${vulns}`;
-  } catch (error) {
-    return `SHODAN: Could not fetch data for ${target}`;
+      if (regEntity) {
+        if (regEntity.vcardArray && regEntity.vcardArray[1]) {
+          const fn = regEntity.vcardArray[1].find((v: any) => v[0] === 'fn');
+          if (fn) registrar = fn[3];
+        } else if (regEntity.handle) {
+          registrar = regEntity.handle;
+        }
+      }
+    }
+    
+    if (data.events && data.events.length > 0) {
+      const regEvent = data.events.find((e: any) => e.eventAction === 'registration' || e.eventAction === 'last changed');
+      if (regEvent) createdDate = new Date(regEvent.eventDate).toLocaleDateString();
+    }
+    
+    return `WHOIS DATA FOR ${target}:\n- Registrar: ${registrar}\n- Created: ${createdDate}\n\n[RDAP RAW]: ${JSON.stringify(data).substring(0, 500)}`;
+  } catch (error: any) {
+    return `WHOIS: Could not retrieve registration data.`;
   }
 }
 
 export function calculateRiskScore(vtData: string, geoData: string, shodanData: string = ""): number {
   let score = 0;
-
-  // Extract malicious detections (weight: 40 points max)
   const maliciousMatch = vtData.match(/Malicious Detections: (\d+)/);
   const malicious = maliciousMatch ? parseInt(maliciousMatch[1]) : 0;
   score += Math.min(malicious * 4, 40);
 
-  // Extract suspicious detections (weight: 20 points max)
   const suspiciousMatch = vtData.match(/Suspicious Detections: (\d+)/);
   const suspicious = suspiciousMatch ? parseInt(suspiciousMatch[1]) : 0;
   score += Math.min(suspicious * 2, 20);
 
-  // Reputation score (weight: 20 points max)
   const reputationMatch = vtData.match(/Reputation Score: (-?\d+)/);
   const reputation = reputationMatch ? parseInt(reputationMatch[1]) : 0;
   if (reputation < 0) score += 20;
   else if (reputation < 10) score += 10;
   else if (reputation < 50) score += 5;
 
-  // Hosting provider penalty (weight: 5 points)
   if (geoData.includes('Yes - likely a server/datacenter')) score += 5;
 
-  // Country risk factor (weight: 5 points)
   const highRiskCountries = ['RU', 'CN', 'KP', 'IR', 'NG'];
   const countryMatch = geoData.match(/Country: .+ \(([A-Z]{2})\)/);
   if (countryMatch && highRiskCountries.includes(countryMatch[1])) score += 5;
 
-  // Shodan Port & Vulnerability risk (weight: up to 20 points)
   if (shodanData.includes('Known Vulnerabilities')) {
     const vulnsMatch = shodanData.match(/Known Vulnerabilities \(CVEs\): (.+)/);
     if (vulnsMatch && vulnsMatch[1] !== 'None detected') {
-      score += 15; // Known CVEs are highly risky
+      score += 15;
     }
   }
   
   if (shodanData.includes('Open Ports:')) {
-    // Check for historically targeted ports
     const riskyPorts = ['21', '22', '23', '3389', '445', '1433', '3306'];
     const portsMatch = shodanData.match(/Open Ports: (.+)/);
     if (portsMatch && portsMatch[1] !== 'None detected') {
       const openPorts = portsMatch[1].split(',').map(p => p.trim());
-      const hasRiskyPorts = openPorts.some(p => riskyPorts.includes(p));
-      if (hasRiskyPorts) score += 10;
-      else if (openPorts.length > 0) score += 5; // General open surface area
+      if (openPorts.some(p => riskyPorts.includes(p))) score += 10;
+      else if (openPorts.length > 0) score += 5;
     }
   }
 
@@ -294,47 +308,4 @@ export function getRiskLabel(score: number): string {
   if (score >= 40) return 'HIGH';
   if (score >= 20) return 'MEDIUM';
   return 'LOW';
-}
-
-export async function queryWhois(target: string): Promise<string> {
-  try {
-    const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
-    if (isIP) return `WHOIS: WHOIS lookup is for domains only, not IP addresses.`;
-
-    const isLocalhost = window.location.hostname === 'localhost';
-    let data;
-
-    if (isLocalhost) {
-      const apiKey = import.meta.env.VITE_WHOIS_API_KEY;
-      const response = await fetch(
-        `https://www.whoisxmlapi.com/whoisserver/WhoisService?apiKey=${apiKey}&domainName=${target}&outputFormat=JSON`
-      );
-      data = await response.json();
-    } else {
-      const response = await fetch(`/.netlify/functions/whois?target=${encodeURIComponent(target)}`);
-      data = await response.json();
-    }
-
-    const record = data.WhoisRecord;
-    if (!record) return `WHOIS: No data found for ${target}`;
-
-    const registrar = record.registrarName || 'Unknown';
-    const created = record.createdDate || 'Unknown';
-    const expires = record.expiresDate || 'Unknown';
-    const updated = record.updatedDate || 'Unknown';
-    const registrant = record.registrant?.organization || record.registrant?.name || 'Hidden/Private';
-    const country = record.registrant?.country || 'Unknown';
-    const nameServers = record.nameServers?.hostNames?.slice(0, 3).join(', ') || 'Unknown';
-
-    return `WHOIS DATA FOR ${target}:
-Registrar: ${registrar}
-Registrant: ${registrant}
-Country: ${country}
-Created: ${created}
-Expires: ${expires}
-Last Updated: ${updated}
-Name Servers: ${nameServers}`;
-  } catch (error) {
-    return `WHOIS: Could not fetch data for ${target}`;
-  }
 }

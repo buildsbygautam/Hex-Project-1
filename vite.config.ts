@@ -8,6 +8,18 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    proxy: {
+      '/shodan-proxy': {
+        target: 'https://api.shodan.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/shodan-proxy/, ''),
+      },
+      '/whois-proxy': {
+        target: 'https://rdap.org',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/whois-proxy/, ''),
+      }
+    }
   },
   plugins: [
     react(),

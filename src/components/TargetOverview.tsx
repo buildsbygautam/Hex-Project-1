@@ -8,6 +8,7 @@ interface TargetOverviewProps {
   geoData: string | null;
   shodanData: string | null;
   riskScore: number;
+  isLoading?: boolean;
 }
 
 // Internal component for the Map to isolate potential Leaflet crashes
@@ -76,7 +77,7 @@ class MapErrorBoundary extends React.Component<{children: React.ReactNode}, {has
   }
 }
 
-export default function TargetOverview({ target, geoData, shodanData, riskScore }: TargetOverviewProps) {
+export default function TargetOverview({ target, geoData, shodanData, riskScore, isLoading }: TargetOverviewProps) {
   // Extract coordinates with a more flexible regex (supports integers and decimals)
   let lat = 0, lon = 0;
   let hasCoords = false;
@@ -96,12 +97,27 @@ export default function TargetOverview({ target, geoData, shodanData, riskScore 
   // Extract ports and vulns
   let ports = 'N/A';
   let vulns = 'N/A';
-  if (shodanData && typeof shodanData === 'string' && shodanData.includes('SHODAN DATA')) {
-    const portsMatch = shodanData.match(/Open Ports: (.+)/);
-    if (portsMatch) ports = portsMatch[1];
-    
-    const vulnsMatch = shodanData.match(/Known Vulnerabilities \(CVEs\): (.+)/);
-    if (vulnsMatch) vulns = vulnsMatch[1];
+  let whoisInfo = 'N/A';
+  let isDomain = !/^\d{1,3}(\.\d{1,3}){3}$/.test(target);
+
+  // Extract infrastructure/domain info
+  if (shodanData && typeof shodanData === 'string') {
+    if (shodanData.includes('SHODAN DATA')) {
+      const portsMatch = shodanData.match(/Open Ports: (.+)/);
+      if (portsMatch) ports = portsMatch[1];
+      
+      const vulnsMatch = shodanData.match(/Known Vulnerabilities \(CVEs\): (.+)/);
+      if (vulnsMatch) vulns = vulnsMatch[1];
+    } else if (shodanData.includes('WHOIS DATA')) {
+      const registrarMatch = shodanData.match(/Registrar: (.+)/);
+      const createdMatch = shodanData.match(/Created: (.+)/);
+      if (registrarMatch) {
+        whoisInfo = registrarMatch[1].trim();
+        if (createdMatch) {
+          whoisInfo += ` (Est. ${createdMatch[1].trim()})`;
+        }
+      }
+    }
   }
 
   // Determine risk color
@@ -115,27 +131,42 @@ export default function TargetOverview({ target, geoData, shodanData, riskScore 
         <h3 className="text-xl font-bold text-white mb-2">Target Intelligence: {target}</h3>
         
         <div className="grid grid-cols-2 gap-4">
-          <div className="bg-black/50 p-3 rounded border border-gray-800 flex flex-col items-center justify-center">
-            <span className="text-gray-400 text-xs uppercase tracking-wider mb-1">Risk Score</span>
-            <div className={`text-4xl font-mono font-bold ${riskColor}`}>
-              {riskScore}
+          <div className="flex flex-col items-center justify-center">
+            <div className={`w-32 h-32 rounded-full border-4 ${isLoading ? 'animate-pulse border-blue-500/50' : 'border-gray-800'} flex items-center justify-center relative overflow-hidden`}>
+              <div className={`absolute inset-0 ${riskBg} opacity-20`} style={{ height: `${riskScore}%`, top: 'auto' }} />
+              <span className={`text-3xl font-bold ${isLoading ? 'text-blue-400' : riskColor}`}>
+                {isLoading ? '...' : riskScore}
+              </span>
             </div>
-            <div className="w-full h-2 bg-gray-800 rounded-full mt-3 overflow-hidden">
-              <div className={`h-full ${riskBg} transition-all duration-1000`} style={{ width: `${riskScore}%` }}></div>
-            </div>
+            <span className="text-[10px] text-gray-500 mt-2 uppercase tracking-[0.2em]">
+              {isLoading ? 'Scanning Engine' : 'Risk Level'}
+            </span>
           </div>
           
-          <div className="bg-black/50 p-3 rounded border border-gray-800 flex flex-col justify-center">
-            <span className="text-gray-400 text-xs uppercase tracking-wider mb-2">Attack Surface</span>
-            <div className="text-sm">
-              <span className="text-gray-500">Ports:</span>{' '}
-              <span className="text-blue-400 break-all">{ports}</span>
+          <div className="grid grid-cols-2 gap-3 flex-1 h-32">
+            <div className="bg-black/50 p-3 rounded border border-gray-800 flex flex-col justify-center">
+              <span className="text-gray-400 text-xs uppercase tracking-wider mb-2">Target Info</span>
+              <div className="text-sm">
+                <span className="text-gray-500">Host:</span> <span className="text-white truncate block">{target}</span>
+              </div>
+              <div className="text-sm mt-1">
+                <span className="text-gray-500">Status:</span> <span className={isLoading ? "text-blue-400 animate-pulse" : "text-green-400"}>{isLoading ? "Fetching Intel..." : "Active"}</span>
+              </div>
             </div>
-            <div className="text-sm mt-1">
-              <span className="text-gray-500">CVEs:</span>{' '}
-              <span className={vulns === 'None detected' || vulns === 'N/A' || vulns.includes('None') ? 'text-green-400' : 'text-red-400'}>
-                {vulns}
+            <div className="bg-black/50 p-3 rounded border border-gray-800 flex flex-col justify-center">
+              <span className="text-gray-400 text-xs uppercase tracking-wider mb-2">
+                {isDomain ? 'Domain Analytics' : 'Attack Surface'}
               </span>
+              <div className="text-sm">
+                <span className="text-gray-500">{isDomain ? 'Registrar:' : 'Ports:'}</span>{' '}
+                <span className="text-blue-400 break-all">{isDomain ? whoisInfo : ports}</span>
+              </div>
+              <div className="text-sm mt-1">
+                <span className="text-gray-500">{isDomain ? 'Threats:' : 'CVEs:'}</span>{' '}
+                <span className={vulns === 'None detected' || vulns === 'N/A' || vulns.includes('None') ? 'text-green-400' : 'text-red-400'}>
+                  {isDomain && whoisInfo === 'N/A' ? 'Searching...' : vulns}
+                </span>
+              </div>
             </div>
           </div>
         </div>

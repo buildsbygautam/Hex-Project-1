@@ -143,9 +143,10 @@ const Index = () => {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentTarget, setCurrentTarget] = useState<string | null>(null);
+  const [riskScore, setRiskScore] = useState<number>(0);
   const [geoData, setGeoData] = useState<string | null>(null);
   const [shodanData, setShodanData] = useState<string | null>(null);
-  const [riskScore, setRiskScore] = useState<number>(0);
+  const [isScanning, setIsScanning] = useState<boolean>(false);
   const [showHistory, setShowHistory] = useState(false);
 
   // Simple localStorage functions
@@ -738,12 +739,37 @@ const Index = () => {
         realData = `\n\nNote: ${target} is a private/local IP address. This is a local network address — external databases cannot be queried for private IPs.`;
       } else {
         const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
-        console.log('--- STARTING MULTI-API SCAN ---');
+        let effectiveTarget = target;
+        
+        // If it's a domain, try to resolve to IP for the map
+        if (!isIP) {
+          try {
+            console.log(`🔍 Resolving domain: ${target}...`);
+            const dnsRes = await fetch(`https://1.1.1.1/dns-query?name=${target}&type=A`, {
+              headers: { 'Accept': 'application/dns-json' }
+            });
+            const dnsData = await dnsRes.json();
+            if (dnsData.Answer && dnsData.Answer.length > 0) {
+              effectiveTarget = dnsData.Answer[0].data;
+            } else {
+              // Fallback to Google DNS
+              const gDnsRes = await fetch(`https://dns.google/resolve?name=${target}&type=A`);
+              const gDnsData = await gDnsRes.json();
+              if (gDnsData.Answer && gDnsData.Answer.length > 0) {
+                effectiveTarget = gDnsData.Answer[0].data;
+              }
+            }
+            console.log(`🌐 Resolved ${target} to ${effectiveTarget}`);
+          } catch (e) {
+            console.warn('DNS Resolution failed:', e);
+          }
+        }
+        
         const [vtData, geoData, whoisData, shodanData] = await Promise.all([
           queryVirusTotal(target),
-          isIP ? queryGeolocation(target) : Promise.resolve('Geolocation: Only available for IP addresses.'),
+          queryGeolocation(effectiveTarget),
           !isIP ? queryWhois(target) : Promise.resolve('WHOIS: Only available for domains.'),
-          isIP ? queryShodan(target) : Promise.resolve('SHODAN: Only available for IP addresses.')
+          isIP ? queryShodan(effectiveTarget) : Promise.resolve('SHODAN: Use WHOIS for domains.')
         ]);
         console.log('✅ ALL API DATA FETCHED');
         console.log('VT:', vtData ? 'YES' : 'NO');
@@ -756,8 +782,9 @@ const Index = () => {
         
         // Update dashboard state
         setGeoData(geoData);
-        setShodanData(shodanData);
+        setShodanData(!isIP ? whoisData : shodanData);
         setRiskScore(calculatedRiskScore);
+        setIsScanning(false);
         
         // Log to database asynchronously
         if (user?.id) {
@@ -772,7 +799,7 @@ const Index = () => {
         }
         
         // Optimize payload for AI
-        realData = `\n\n[SECURITY SCAN SUMMARY FOR ${target}]\nRisk Score: ${calculatedRiskScore}/100\nVerdict: ${riskLabel}\n\n[VirusTotal]: ${vtData.substring(0, 500)}...\n\n[Geolocation]: ${geoData}\n\n[Shodan]: ${shodanData.substring(0, 500)}...`;
+        realData = `\n\n[SECURITY SCAN SUMMARY FOR ${target}]\nResolved IP: ${effectiveTarget}\nRisk Score: ${calculatedRiskScore}/100\nVerdict: ${riskLabel}\n\n[VirusTotal]: ${vtData.substring(0, 500)}...\n\n[Geolocation]: ${geoData}\n\n[Whois]: ${whoisData}\n\n[Shodan]: ${shodanData.substring(0, 500)}...`;
       }
     }
 
@@ -1193,6 +1220,7 @@ const Index = () => {
                   geoData={geoData} 
                   shodanData={shodanData} 
                   riskScore={riskScore} 
+                  isLoading={isScanning}
                 />
               )}
               {messages.length === 0 ? (
