@@ -626,7 +626,7 @@ const Index = () => {
     setReportContent(''); // Clear previous report
 
     // Compile the chat history into a readable format for the AI
-    const sessionContext = messages.map(m => `${m.type === 'user' ? 'USER' : 'HEX AI'}: ${m.content}`).join('\n\n');
+    const sessionContext = messages.slice(-10).map(m => `${m.type === 'user' ? 'USER' : 'HEX AI'}: ${m.content.substring(0, 500)}`).join('\n\n');
 
     const reportPrompt = `You are Hex AI, a Senior Penetration Tester. Generate a professional, executive-level cybersecurity assessment report based ONLY on the following chat session. 
     

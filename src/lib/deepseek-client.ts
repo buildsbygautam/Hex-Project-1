@@ -28,7 +28,7 @@ export async function sendToDeepSeek(
           ...messages
         ],
         stream: true,
-        max_tokens: 8000,
+        max_tokens: 2000,
         temperature: 0.3
       }),
       signal: abortSignal
