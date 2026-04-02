@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown, FileText, Clock } from 'lucide-react';
+import { Send, Terminal, Copy as CopyIcon, Check as CheckIcon, Shield, User, LogOut, Square, Plus, ArrowDown, FileText, Clock, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -130,6 +130,7 @@ const Index = () => {
     incrementUsage,
     isPremium,
     dailyUsage,
+    refreshUsage,
     signOut
   } = useAuth();
 
@@ -689,6 +690,20 @@ const Index = () => {
     }
   };
 
+  const handleDownloadReport = () => {
+    if (!reportContent) return;
+    
+    const blob = new Blob([reportContent], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Hex-Security-Assessment-${new Date().toISOString().split('T')[0]}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const sendMessage = async (isRetry: boolean = false, autoTrigger: boolean = false, directMessage?: string) => {
     const messageToSend = directMessage || input.trim();
     // Skip input check if this is an auto-triggered analysis or direct message
@@ -713,12 +728,24 @@ const Index = () => {
       return;
     }
 
-    // Check usage limits (only for new messages, not retries)
-    if (!isRetry && !canSendMessage) {
-      // Show billing popup instead of error message
-      console.log('❌ Usage limit check failed - showing billing popup');
+    // 1. Initial usage check (fast)
+    if (!isRetry && !autoTrigger && !isPremium && !canSendMessage) {
+      console.log('❌ Daily message limit reached - showing billing popup');
       setShowBillingPopup(true);
       return;
+    }
+
+    // 2. Increment usage BEFORE any scanning state is changed
+    if (!isRetry && !autoTrigger && !isPremium) {
+      const success = await incrementUsage();
+      if (!success) {
+        console.log('❌ Daily message limit reached during increment');
+        setShowBillingPopup(true);
+        return;
+      }
+    } else if (autoTrigger && !isRetry && !isPremium) {
+      const success = await incrementUsage();
+      if (!success) return; 
     }
 
     // Check context limit and start new chat if needed (only for new messages, not retries)
@@ -729,9 +756,6 @@ const Index = () => {
       startNewChatWithNotification(
         `Context limit approaching (~${estimatedTotal}K tokens). Starting fresh conversation to ensure optimal AI performance. Your previous conversation has been preserved with smart context optimization.`
       );
-
-      // Continue with the message in the new chat
-      // The notification message is already added, so we can proceed
     }
 
     // Extract target and fetch real data before sending to AI
@@ -747,25 +771,16 @@ const Index = () => {
         const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target);
         let effectiveTarget = target;
         
-        // If it's a domain, try to resolve to IP for the map
+        // DNS Resolution logic...
         if (!isIP) {
           try {
-            console.log(`🔍 Resolving domain: ${target}...`);
             const dnsRes = await fetch(`https://1.1.1.1/dns-query?name=${target}&type=A`, {
               headers: { 'Accept': 'application/dns-json' }
             });
             const dnsData = await dnsRes.json();
             if (dnsData.Answer && dnsData.Answer.length > 0) {
               effectiveTarget = dnsData.Answer[0].data;
-            } else {
-              // Fallback to Google DNS
-              const gDnsRes = await fetch(`https://dns.google/resolve?name=${target}&type=A`);
-              const gDnsData = await gDnsRes.json();
-              if (gDnsData.Answer && gDnsData.Answer.length > 0) {
-                effectiveTarget = gDnsData.Answer[0].data;
-              }
             }
-            console.log(`🌐 Resolved ${target} to ${effectiveTarget}`);
           } catch (e) {
             console.warn('DNS Resolution failed:', e);
           }
@@ -779,14 +794,12 @@ const Index = () => {
           !isIP ? querySubdomains(target) : Promise.resolve({ formatted: 'SUBDOMAINS: N/A for IP addresses.', raw: [] })
         ]);
 
-        // Extract formatted strings for AI and dashboard
         const vtData = vtResult.formatted;
         const geoData = geoResult.formatted;
         const whoisData = whoisResult.formatted;
         const shodanData = shodanResult.formatted;
         const subdomainsData = subdomainsResult.formatted;
 
-        // Store raw API data for the Raw Data Viewer
         const newRawApiData: RawApiData = {};
         if (vtResult.raw) newRawApiData.virustotal = vtResult.raw;
         if (shodanResult.raw) newRawApiData.shodan = shodanResult.raw;
@@ -794,24 +807,15 @@ const Index = () => {
         if (geoResult.raw) newRawApiData.geolocation = geoResult.raw;
         setRawApiData(newRawApiData);
         setSubdomains(subdomainsResult.raw || []);
-
-        console.log('✅ ALL API DATA FETCHED');
-        console.log('VT:', vtData ? 'YES' : 'NO');
-        console.log('GEO:', geoData ? 'YES' : 'NO');
-        console.log('WHOIS:', whoisData ? 'YES' : 'NO');
-        console.log('SHODAN:', shodanData ? 'YES' : 'NO');
-        console.log('RAW DATA:', Object.keys(newRawApiData).join(', ') || 'NONE');
         
         const calculatedRiskScore = calculateRiskScore(vtData, geoData, shodanData);
         const riskLabel = getRiskLabel(calculatedRiskScore);
         
-        // Update dashboard state
         setGeoData(geoData);
         setShodanData(!isIP ? whoisData : shodanData);
         setRiskScore(calculatedRiskScore);
         setIsScanning(false);
         
-        // Log to database asynchronously
         if (user?.id) {
           supabase.from('scan_history').insert({
             user_id: user.id,
@@ -823,13 +827,10 @@ const Index = () => {
           });
         }
         
-        // Optimize payload for AI
-        // Optimize payload for AI - truncate components to stay under token limits
         const vtExcerpt = vtData.substring(0, 400);
         const geoExcerpt = geoData.substring(0, 200);
         const whoisExcerpt = whoisData.substring(0, 400);
         const shodanExcerpt = shodanData.substring(0, 400);
-        // For the AI prompt, give a smaller subset of subdomains than the UI shows
         const subdomainListExcerpt = subdomainsResult.raw ? subdomainsResult.raw.slice(0, 25).join(', ') : 'None';
         const subdomainCount = subdomainsResult.raw ? subdomainsResult.raw.length : 0;
         
@@ -838,42 +839,22 @@ const Index = () => {
     }
 
     const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-
     if (!apiKey) {
       handleApiError({
         type: 'client',
-        message: 'Groq API key not found. Please set VITE_GROQ_API_KEY in your .env file.',
+        message: 'Groq API key not found.',
         status: 0,
         retryable: true,
       });
       return;
     }
 
-    // Add user message to chat (unless it's a retry or auto-trigger)
+    // Add user message to chat
     if (!isRetry && !autoTrigger) {
-      // CRITICAL: Check usage limit BEFORE adding message to UI
-      const usageIncremented = await incrementUsage();
-      if (!usageIncremented && !isPremium) {
-        // Usage limit exceeded - show billing popup and stop
-        console.log('❌ Daily message limit exceeded');
-        setShowBillingPopup(true);
-        return;
-      }
-
-      // Only add message to UI if usage increment succeeded
       addMessage('user', messageToSend);
       setInput('');
-      // Force scroll to bottom when user sends a message
       userScrolledRef.current = false;
       setTimeout(() => scrollToBottom(true), 100);
-    } else if (autoTrigger && !isRetry) {
-      // For auto-triggered messages, still increment usage (message already added)
-      const usageIncremented = await incrementUsage();
-      if (!usageIncremented && !isPremium) {
-        console.log('❌ Daily message limit exceeded during auto-analysis');
-        setShowBillingPopup(true);
-        return;
-      }
     }
 
     setLastError(null);
@@ -988,9 +969,12 @@ const Index = () => {
       });
       }
     } finally {
-      // Note: We don't cancel animation frame here anymore because it was dropping the final chunk update!
       setIsStreaming(false);
       setCurrentAbortController(null);
+      // Refresh usage stats in sidebar after scan completes
+      if (!isPremium) {
+        setTimeout(refreshUsage, 500);
+      }
     }
   };
 
@@ -1147,18 +1131,16 @@ const Index = () => {
                     </span>
                   </div>
 
-                  {/* Generate Report Button */}
-                  {messages.length > 1 && !isStreaming && (
+                  {/* Generate Report Button - Premium Only */}
+                  {isPremium && (
                     <div 
-                      className={`flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border cursor-pointer transition-colors ${
-                        isGeneratingReport ? 'border-orange-500/20 text-orange-400' : 'border-purple-500/20 hover:bg-purple-500/10 text-purple-300'
-                      }`}
+                      className="flex items-center gap-1.5 bg-black/40 backdrop-blur-sm rounded-full px-2 py-1 border border-green-500/30 cursor-pointer transition-colors hover:bg-green-500/10 text-green-400 ml-1"
                       onClick={generateReport}
-                      title="Generate Assessment Report"
+                      title="Generate Executive Security Assessment Report"
                     >
-                      <FileText className={`h-3 w-3 ${isGeneratingReport ? 'animate-pulse' : ''}`} />
+                      <FileText className="h-3 w-3" />
                       <span className="hidden sm:inline text-xs font-light">
-                        {isGeneratingReport ? 'Generating...' : 'Report'}
+                        Report
                       </span>
                     </div>
                   )}
@@ -1235,6 +1217,7 @@ const Index = () => {
                   isLoading={isScanning}
                   rawApiData={rawApiData}
                   subdomains={subdomains}
+                  isPremium={isPremium}
                 />
               )}
               {messages.length === 0 ? (
@@ -1635,18 +1618,29 @@ const Index = () => {
                 Executive Security Assessment
               </div>
               {!isGeneratingReport && reportContent && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-green-500/30 text-green-400 hover:bg-green-500/10 h-8"
-                  onClick={() => {
-                    navigator.clipboard.writeText(reportContent);
-                    alert("Report copied to clipboard!"); // Simple alert, or use your toast system
-                  }}
-                >
-                  <CopyIcon className="h-4 w-4 mr-2" />
-                  Copy Markdown
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-green-500/30 text-green-400 hover:bg-green-500/10 h-8"
+                    onClick={() => {
+                      navigator.clipboard.writeText(reportContent);
+                      alert("Report copied to clipboard!"); 
+                    }}
+                  >
+                    <CopyIcon className="h-4 w-4 mr-2" />
+                    Copy
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-green-500/30 text-green-400 hover:bg-green-500/10 h-8"
+                    onClick={handleDownloadReport}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download .md
+                  </Button>
+                </div>
               )}
             </DialogTitle>
           </DialogHeader>

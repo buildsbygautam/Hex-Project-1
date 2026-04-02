@@ -13,6 +13,7 @@ interface TargetOverviewProps {
   isLoading?: boolean;
   rawApiData?: RawApiData;
   subdomains?: string[];
+  isPremium?: boolean;
 }
 
 // Internal component for the Map to isolate potential Leaflet crashes
@@ -81,7 +82,7 @@ class MapErrorBoundary extends React.Component<{children: React.ReactNode}, {has
   }
 }
 
-const TargetOverview: React.FC<TargetOverviewProps> = ({ target, geoData, shodanData, riskScore, isLoading, rawApiData, subdomains }) => {
+const TargetOverview: React.FC<TargetOverviewProps> = ({ target, geoData, shodanData, riskScore, isLoading, rawApiData, subdomains, isPremium }) => {
   const [showRawData, setShowRawData] = useState(false);
   const [showSubdomains, setShowSubdomains] = useState(false);
   // Extract coordinates with a more flexible regex (supports integers and decimals)
@@ -139,29 +140,39 @@ const TargetOverview: React.FC<TargetOverviewProps> = ({ target, geoData, shodan
           <h3 className="text-xl font-bold text-white">Target Intelligence: {target}</h3>
         
           <div className="flex items-center gap-2">
-            {/* Subdomains Button */}
-            {subdomains && subdomains.length > 0 && (
+            {/* Subdomains Button - Premium Only */}
+            {isDomain && (
               <button
-                onClick={() => setShowSubdomains(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-300 border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-500/20 hover:border-green-500/50 hover:shadow-lg hover:shadow-green-900/20 group"
-                title={`${subdomains.length} Subdomains found`}
+                onClick={() => isPremium ? setShowSubdomains(true) : null}
+                disabled={!isPremium}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-300 border ${
+                  isPremium 
+                    ? "border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-500/20 hover:border-green-500/50 hover:shadow-lg hover:shadow-green-900/20" 
+                    : "border-gray-500/20 bg-gray-500/5 text-gray-500 cursor-not-allowed"
+                } group`}
+                title={isPremium ? `${subdomains?.length || 0} Subdomains found` : "Premium feature: Subdomain Discovery"}
               >
-                <span className="text-sm">🌐</span>
+                <span className="text-sm">{isPremium ? "🌐" : "🔒"}</span>
                 <span className="hidden sm:inline">Subdomains</span>
-                <span className="bg-green-500/20 px-1.5 py-0.5 rounded text-[10px]">{subdomains.length}</span>
+                {isPremium && <span className="bg-green-500/20 px-1.5 py-0.5 rounded text-[10px]">{subdomains?.length || 0}</span>}
               </button>
             )}
 
-            {/* Raw Data Button */}
+            {/* Raw Data Button - Premium Only */}
             {rawApiData && (Object.values(rawApiData).some(v => v !== null && v !== undefined)) && (
             <button
-              onClick={() => setShowRawData(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-300 border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-500/50 hover:shadow-lg hover:shadow-cyan-900/20 group"
-              title="View raw API responses"
+              onClick={() => isPremium ? setShowRawData(true) : null}
+              disabled={!isPremium}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-300 border ${
+                isPremium
+                  ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-500/50 hover:shadow-lg hover:shadow-cyan-900/20"
+                  : "border-gray-500/20 bg-gray-500/5 text-gray-500 cursor-not-allowed"
+              } group`}
+              title={isPremium ? "View raw API responses" : "Premium feature: Raw Data Access"}
             >
-              <span className="text-sm">📊</span>
+              <span className="text-sm">{isPremium ? "📊" : "🔒"}</span>
               <span className="hidden sm:inline">Raw Data</span>
-              <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse group-hover:animate-none" />
+              {isPremium && <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse group-hover:animate-none" />}
             </button>
           )}
           </div>
@@ -200,13 +211,49 @@ const TargetOverview: React.FC<TargetOverviewProps> = ({ target, geoData, shodan
               </div>
               <div className="text-sm mt-1">
                 <span className="text-gray-500">{isDomain ? 'Threats:' : 'CVEs:'}</span>{' '}
-                <span className={vulns === 'None detected' || vulns === 'N/A' || vulns.includes('None') ? 'text-green-400' : 'text-red-400'}>
-                  {isDomain && whoisInfo === 'N/A' ? 'Searching...' : vulns}
+                <span className={riskScore > 30 ? 'text-red-400 font-bold' : 'text-orange-400'}>
+                  {riskScore > 0 ? `${riskScore}% Intensity` : 'Scan Complete'}
                 </span>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Intelligence Enrichment - Advanced Indicators */}
+        {isPremium && rawApiData?.virustotal && (rawApiData.virustotal.threatActors?.length > 0 || rawApiData.virustotal.significantTags?.length > 0) && (
+          <div className="mt-4 pt-3 border-t border-red-500/10 animate-in fade-in slide-in-from-bottom-2 duration-1000">
+             <div className="flex items-center gap-2 mb-2">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-shodan" />
+                <span className="text-[10px] font-bold text-red-400 uppercase tracking-widest">Advanced Threat Intelligence</span>
+             </div>
+             
+             <div className="flex flex-wrap gap-2 mb-3">
+                {rawApiData.virustotal.threatActors?.map((actor: string, id: number) => (
+                  <div key={`actor-${id}`} className="px-2 py-1 rounded bg-red-950/40 border border-red-500/30 text-[10px] font-mono text-white uppercase tracking-tighter shadow-sm shadow-red-500/10">
+                    🚩 {actor}
+                  </div>
+                ))}
+                {rawApiData.virustotal.significantTags?.map((tag: string, id: number) => (
+                  <div key={`tag-${id}`} className="px-2 py-1 rounded bg-orange-950/40 border border-orange-500/30 text-[10px] font-mono text-orange-200 uppercase tracking-tighter">
+                    🏷️ {tag}
+                  </div>
+                ))}
+             </div>
+
+             {/* Threat Translation for Humans */}
+             <div className="bg-red-500/5 p-2 rounded border border-red-500/10 text-[9px] font-medium leading-relaxed uppercase tracking-tight">
+                <p className="text-red-400 mb-1">🔍 Intelligence Summary:</p>
+                <p className="text-gray-400">
+                  {rawApiData.virustotal.significantTags?.some((t: string) => t.includes('c2')) && "• Command & Control (C2) handshake detected - active threat control link identified. "}
+                  {rawApiData.virustotal.significantTags?.some((t: string) => t.includes('nxdomain')) && "• NXDOMAIN/DGA activity detected - potential automated malware heartbeat behavior. "}
+                  {rawApiData.virustotal.significantTags?.some((t: string) => t.includes('phishing')) && "• Phishing heuristics triggered - domain structure matches known identity-theft patterns. "}
+                  {rawApiData.virustotal.significantTags?.some((t: string) => t.includes('malware')) && "• Direct malware payload association confirmed by cross-engine scans. "}
+                  {rawApiData.virustotal.threatActors?.length > 0 && "• ATTRIBUTION: Target belongs to an official threat-actor watch-list."}
+                  {(!rawApiData.virustotal.threatActors?.length && !rawApiData.virustotal.significantTags?.length) && "Analyzing behavioral indicators for anomalies..."}
+                </p>
+             </div>
+          </div>
+        )}
       </div>
 
       {/* Right side: Interactive Map Section with Shielding */}

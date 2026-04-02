@@ -158,22 +158,39 @@ export async function queryVirusTotal(target: string): Promise<{ formatted: stri
     }
 
     const stats = data.data?.attributes?.last_analysis_stats;
-    const reputation = data.data?.attributes?.reputation || 0;
-    const malicious = stats?.malicious || 0;
-    const suspicious = stats?.suspicious || 0;
-    const harmless = stats?.harmless || 0;
-    const undetected = stats?.undetected || 0;
-    const categories = data.data?.attributes?.categories || {};
-    const categoryList = Object.values(categories).join(', ') || 'None';
-    const formatted = `VIRUSTOTAL RESULTS FOR ${target}:
+    const reputation = data.data?.attributes?.reputation;
+    const tags = data.data?.attributes?.tags || [];
+    const crowdsourced = data.data?.attributes?.crowdsourced_context || [];
+    
+    // Extract potential threat actors or malware families from context/tags
+    const threatActors: string[] = [];
+    crowdsourced.forEach((ctx: any) => {
+      if (ctx.label) threatActors.push(ctx.label);
+    });
+    
+    // Filter tags for high-threat keywords (DGA, phishing, actor names)
+    const significantTags = tags.filter((tag: string) => 
+      ['dga', 'phishing', 'malware', 'botnet', 'c2', 'apt', 'nxdomain', 'hosting'].some(keyword => tag.toLowerCase().includes(keyword))
+    );
+
+    const formatted = `[VirusTotal Scan Result]
 Reputation Score: ${reputation}
-Malicious Detections: ${malicious}
-Suspicious Detections: ${suspicious}
-Harmless Votes: ${harmless}
-Undetected: ${undetected}
-Categories: ${categoryList}
-Verdict: ${malicious > 5 ? '🚨 MALICIOUS' : malicious > 0 ? '⚠️ SUSPICIOUS' : suspicious > 0 ? '⚠️ SUSPICIOUS' : '✅ CLEAN'}`;
-    return { formatted, raw: data };
+Malicious Detections: ${stats?.malicious || 0}
+Suspicious Detections: ${stats?.suspicious || 0}
+Harmless Votes: ${stats?.harmless || 0}
+Undetected: ${stats?.undetected || 0}
+Tags: ${tags.join(', ') || 'None'}
+Threat Intelligence: ${threatActors.length > 0 ? threatActors.join(', ') : 'No specific actors identified'}
+Verdict: ${stats?.malicious > 0 ? '❌ MALICIOUS' : stats?.suspicious > 0 ? '⚠️ SUSPICIOUS' : '✅ CLEAN'}`;
+
+    return { 
+      formatted, 
+      raw: { 
+        ...data.data?.attributes, 
+        threatActors, 
+        significantTags 
+      } 
+    };
   } catch (error) {
     return { formatted: `Could not fetch VirusTotal data for ${target}`, raw: null };
   }
@@ -290,44 +307,69 @@ export async function querySubdomains(target: string): Promise<{ formatted: stri
       return { formatted: `SUBDOMAINS: N/A for IP addresses`, raw: [] };
     }
 
-    // Use HackerTarget Host Search API which has liberal CORS and is very fast
-    const apiUrl = `https://api.hackertarget.com/hostsearch/?q=${target}`;
-    const response = await fetch(apiUrl);
+    console.log(`📡 Launching Parallel Deep Scan for: ${target}`);
     
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    
-    const textData = await response.text();
-    
-    if (textData.includes('error') || textData.includes('API count exceeded')) {
-      throw new Error('API limit reached or target invalid');
-    }
+    const apiKey = import.meta.env.VITE_VIRUSTOTAL_API_KEY;
+    if (!apiKey) throw new Error('VirusTotal API key is missing');
 
     const subdomainsSet = new Set<string>();
-    
-    // Parse CSV: subdomain,ip
-    const lines = textData.split('\n');
-    lines.forEach(line => {
-      const parts = line.split(',');
-      if (parts.length >= 1 && parts[0].trim().length > 0) {
-        let name = parts[0].trim().toLowerCase();
-        if (name.endsWith(target)) {
-          subdomainsSet.add(name);
+
+    try {
+      // 1. First, we need the cursor for page 2, so we always do page 1 first
+      const vtUrl = `https://www.virustotal.com/api/v3/domains/${target}/subdomains?limit=40`;
+      const response = await fetch(vtUrl, { headers: { 'x-apikey': apiKey } });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.data && Array.isArray(data.data)) {
+          data.data.forEach((item: any) => { if (item.id) subdomainsSet.add(item.id.toLowerCase()); });
+          
+          const nextCursor = data.meta?.cursor;
+          
+          // Now launch Page 2 and HackerTarget in parallel for speed boost
+          const [nextRes, htRes] = await Promise.allSettled([
+            nextCursor 
+              ? fetch(`https://www.virustotal.com/api/v3/domains/${target}/subdomains?limit=40&cursor=${nextCursor}`, { headers: { 'x-apikey': apiKey } })
+              : Promise.resolve(null),
+            fetch(`https://api.hackertarget.com/hostsearch/?q=${target}`)
+          ]);
+
+          // Handle Page 2 results
+          if (nextRes.status === 'fulfilled' && nextRes.value && nextRes.value.ok) {
+            const nextData = await nextRes.value.json();
+            if (nextData.data && Array.isArray(nextData.data)) {
+              nextData.data.forEach((item: any) => { if (item.id) subdomainsSet.add(item.id.toLowerCase()); });
+            }
+          }
+
+          // Handle HackerTarget results
+          if (htRes.status === 'fulfilled' && htRes.value && htRes.value.ok) {
+            const text = await htRes.value.text();
+            if (!text.includes('API count exceeded')) {
+              text.split('\n').forEach(line => {
+                const name = line.split(',')[0].trim().toLowerCase();
+                if (name && name.endsWith(target) && name !== target) subdomainsSet.add(name);
+              });
+            }
+          }
         }
       }
-    });
-
-    const subdomains = Array.from(subdomainsSet).sort();
-    
-    if (subdomains.length === 0) {
-       return { formatted: `SUBDOMAINS FOR ${target}:\nNo subdomains discovered.`, raw: [] };
+    } catch (e) {
+      console.warn('Deep Scan parallelization had issues:', e);
     }
 
-    const formatted = `SUBDOMAINS FOR ${target}:\nFound ${subdomains.length} unique subdomains.\n${subdomains.slice(0, 50).join(', ')}${subdomains.length > 50 ? '... (truncated)' : ''}`;
-    
-    return { formatted, raw: subdomains };
+    const subdomains = Array.from(subdomainsSet).sort();
+    if (subdomains.length > 0) {
+      return { 
+        formatted: `SUBDOMAINS FOR ${target}:\nFound ${subdomains.length} unique subdomains.\n${subdomains.slice(0, 50).join(', ')}${subdomains.length > 50 ? '... (truncated)' : ''}`, 
+        raw: subdomains 
+      };
+    }
+
+    return { formatted: `SUBDOMAINS FOR ${target}:\nNo high-confidence subdomains discovered.`, raw: [] };
 
   } catch (error: any) {
-    console.error('Error fetching subdomains:', error);
+    console.error('Error in VirusTotal subdomain fetch:', error);
     return { formatted: `SUBDOMAINS DATA UNAVAILABLE: ${error.message}`, raw: [], error: true };
   }
 }

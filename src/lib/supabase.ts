@@ -117,20 +117,17 @@ export const authFunctions = {
         .select('*')
         .eq('id', userId)
         .abortSignal(controller.signal)
-        .single();
+        .maybeSingle();
 
       clearTimeout(timeoutId);
 
-      // Handle "No Row Found" gracefully as a null profile (not a system error)
-      if (error && error.code === 'PGRST116') {
-        return { profile: null, error: null };
+      if (error) {
+        console.warn('⚠️ Profile fetch error (may be fine if new user):', error.message);
+        return { profile: null, error };
       }
-
-      return { profile: data, error };
+      return { profile: data, error: null };
     } catch (err: any) {
       clearTimeout(timeoutId);
-      // Abort errors are expected sometimes
-      if (err.name === 'AbortError') return { profile: null, error: null };
       console.error('❌ Unexpected error in getUserProfile:', err);
       return { profile: null, error: err };
     }
@@ -150,65 +147,57 @@ export const authFunctions = {
 
   // Check daily usage - simplified version without RPC
   async getDailyUsage(userId: string): Promise<{ messageCount: number, canSendMessage: boolean, error: any }> {
-    console.log('🔄 Getting daily usage for:', userId);
+    const today = new Date().toISOString().split('T')[0];
+    let currentCount = 0;
+    let isPremium = false;
 
+    // 1. Fetch current usage (Source of truth for the counter)
     try {
-      // First get user subscription status and expiry dates
-      const { data: profile, error: profileError } = await supabase
-        .from('user_profiles')
-        .select('subscription_status, subscription_end_date')
-        .eq('id', userId)
-        .single();
-
-      if (profileError) {
-        console.error('❌ Error getting user profile for usage:', profileError);
-        return { messageCount: 0, canSendMessage: true, error: profileError };
-      }
-
-      // If premium, check if subscription has expired
-      if (profile?.subscription_status === 'premium') {
-        // Check if subscription has expired
-        if (profile.subscription_end_date && new Date() > new Date(profile.subscription_end_date)) {
-          console.log('⏰ Premium subscription expired, downgrading user');
-          // Downgrade expired user
-          await authFunctions.downgradeExpiredUser(userId);
-          // Return as free user
-          return { messageCount: 0, canSendMessage: false, error: null };
-        }
-        
-        console.log('✅ Premium user - unlimited messages');
-        return { messageCount: 0, canSendMessage: true, error: null };
-      }
-
-      // For free users, check today's usage
-      const today = new Date().toISOString().split('T')[0];
-      const { data: usage, error: usageError } = await supabase
+      const { data: usageData, error: usageError } = await supabase
         .from('daily_usage')
         .select('message_count')
         .eq('user_id', userId)
         .eq('usage_date', today)
-        .single();
-
-      if (usageError && usageError.code !== 'PGRST116') { // PGRST116 = not found
-        // Only log serious errors, not "no data found" or "not acceptable"
-        if ((usageError as any).status !== 406) {
-          console.error('❌ Error getting daily usage:', usageError);
-        } else {
-          console.warn('⚠️ Supabase connection restricted: Check API keys and RLS policies.');
-        }
-        return { messageCount: 0, canSendMessage: true, error: usageError };
+        .maybeSingle();
+      
+      if (usageError) {
+        console.warn('⚠️ Usage fetch error:', usageError.message);
+      } else {
+        currentCount = usageData?.message_count || 0;
+        console.log(`📊 Current usage from DB: ${currentCount}`);
       }
-
-      const messageCount = usage?.message_count || 0;
-      const canSendMessage = messageCount < 3; // Allow 0, 1, 2 messages (3 total)
-
-      console.log('✅ Daily usage result:', { messageCount, canSendMessage, limit: 3 });
-      return { messageCount, canSendMessage, error: null };
-
-    } catch (err) {
-      console.error('❌ Unexpected error in getDailyUsage:', err);
-      return { messageCount: 0, canSendMessage: true, error: err };
+    } catch (e) {
+      console.error('❌ Usage query crashed:', e);
     }
+
+    // 2. Fetch user profile (to check premium status) - completely separate
+    try {
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('subscription_status')
+        .eq('id', userId)
+        .maybeSingle();
+      
+      if (!profileError && profile?.subscription_status === 'premium') {
+        isPremium = true;
+        console.log('👑 Verified PREMIUM user status');
+      } else if (profileError) {
+        console.warn('⚠️ Profile check error (406?):', profileError.message);
+      }
+    } catch (e) {
+      console.warn('⚠️ Profile query crashed:', e);
+    }
+
+    // 3. Final verdict
+    if (isPremium) {
+      return { messageCount: 0, canSendMessage: true, error: null };
+    }
+
+    return { 
+      messageCount: currentCount, 
+      canSendMessage: currentCount < 3, 
+      error: null 
+    };
   },
 
   // Downgrade expired premium user to free
@@ -239,25 +228,62 @@ export const authFunctions = {
     }
   },
 
-  // Increment daily usage
+  // Manual Increment daily usage (Standard Update Method)
   async incrementDailyUsage(userId: string): Promise<{ success: boolean, error: any }> {
-    console.log('🔄 Calling increment_daily_usage for user:', userId);
+    console.log('🔄 Calling manual increment usage for user:', userId);
     
-    const { data, error } = await supabase.rpc('increment_daily_usage', {
-      user_uuid: userId
-    });
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      
+      // 1. Fetch current usage
+      const { data, error: selectError } = await supabase
+        .from('daily_usage')
+        .select('id, message_count')
+        .eq('user_id', userId)
+        .eq('usage_date', today)
+        .single();
+      
+      if (selectError && selectError.code !== 'PGRST116') {
+        console.error('❌ Error fetching current usage:', selectError);
+        return { success: true, error: selectError }; // Fail open for safety
+      }
 
-    console.log('📊 increment_daily_usage result:', { data, error });
-    
-    if (error) {
-      console.error('❌ Error calling increment_daily_usage:', error);
-      return { success: false, error };
+      const currentCount = data?.message_count || 0;
+      
+      // 2. Check if we're truly at the limit
+      if (currentCount >= 3) {
+        console.warn('⚠️ Usage limit reached (blocked by client logic)');
+        return { success: false, error: null };
+      }
+
+      // 3. Upsert (Update or Insert) the new count
+      if (data?.id) {
+        // Update existing record
+        const { error: updateError } = await supabase
+          .from('daily_usage')
+          .update({ message_count: currentCount + 1 })
+          .eq('id', data.id);
+        
+        if (updateError) throw updateError;
+      } else {
+        // Insert new record
+        const { error: insertError } = await supabase
+          .from('daily_usage')
+          .insert({
+            user_id: userId,
+            usage_date: today,
+            message_count: 1
+          });
+        
+        if (insertError) throw insertError;
+      }
+
+      console.log(`✅ Usage incremented to ${currentCount + 1}`);
+      return { success: true, error: null };
+    } catch (err) {
+      console.error('❌ Unexpected error in manual incrementDailyUsage:', err);
+      return { success: true, error: err }; // Fail open fallback
     }
-
-    const success = data === true;
-    console.log(success ? '✅ Usage incremented successfully' : '❌ Usage increment blocked (limit exceeded)');
-    
-    return { success, error: null };
   }
 };
 
