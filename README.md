@@ -95,7 +95,7 @@ Final Major Project Submission • Created for **The Future of AI Security**.
 ### **Completed ✅**
 - [x] Real-time terminal output
 - [x] GitHub OAuth authentication
-- [x] Premium subscription system
+- [x] Premium subscription system(Show only Pop-up)
 - [x] Error auto-correction
 - [x] Report generation
 
