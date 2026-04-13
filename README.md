@@ -92,5 +92,21 @@ This platform is intended for **Educational Purposes and Authorized Security Tes
 
 Final Major Project Submission • Created for **The Future of AI Security**.
 
+### **Completed ✅**
+- [x] Real-time terminal output
+- [x] GitHub OAuth authentication
+- [x] Premium subscription system
+- [x] Error auto-correction
+- [x] Report generation
+
+### **Planned 📅**
+- [ ] Custom tool integration
+- [ ] Plugin system
+- [ ] API for third-party integrations
+- [ ] Advanced analytics dashboard
+- [ ] Multi-language support
+- [ ] Docker Based Execution
+- [ ] Agentic tool execution
+- [ ] 42+ security tools integrated
 
 **Made with ❤️ by the Hex AI Team (Gautam Kumar | Gaurav Pehljaani | Joy Edwin Minz)**
