@@ -90,3 +90,6 @@ This platform is intended for **Educational Purposes and Authorized Security Tes
 **🕵️‍♂️ Tactical Intel • 🛰️ Autonomous Recon • 🛡️ Strategic Defense**
 
 Final Major Project Submission • Created for **The Future of AI Security**.
+
+
+**Made with ❤️ by the Hex AI Team (Gautam Kumar | Gaurav Pehljaani | Joy Edwin Minz)**
