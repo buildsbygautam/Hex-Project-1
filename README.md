@@ -8,7 +8,7 @@
 
 HEX AI is a professional-grade **Autonomous Intelligence Platform** built on a "Cyberdeck" aesthetic. It correlates disparate security data sources into a high-contrast, emerald-themed dashboard, providing immediate, actionable visibility into any digital infrastructure.
 
-**🌐 Live Demo:** [https://hex-agent.netlify.app/](https://hex-agent.netlify.app/)
+**🌐 Pre-configured:** [https://hex-agent.netlify.app/](https://hex-agent.netlify.app/)
 ---
 
 ## ✨ Elite Features
